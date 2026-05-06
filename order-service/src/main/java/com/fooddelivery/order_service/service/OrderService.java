@@ -18,13 +18,16 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final CustomerClient customerClient;
     private final RestaurantClient restaurantClient;
+    private final com.fooddelivery.order_service.publisher.OrderEventPublisher eventPublisher;
 
     public OrderService(OrderRepository orderRepository,
                         CustomerClient customerClient,
-                        RestaurantClient restaurantClient) {
+                        RestaurantClient restaurantClient,
+                        com.fooddelivery.order_service.publisher.OrderEventPublisher eventPublisher) {
         this.orderRepository = orderRepository;
         this.customerClient = customerClient;
         this.restaurantClient = restaurantClient;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -89,11 +92,40 @@ public class OrderService {
         order.setTotalAmount(total);
         Order savedOrder = orderRepository.save(order);
 
-        // ASYNC DELIVERY:
-        // Instead of calling deliveryService directly, we will later publish an OrderPlacedEvent here
-        // eventPublisher.publishEvent(new OrderPlacedEvent(savedOrder.getId()));
+        // ASYNC DELIVERY: Publish OrderPlacedEvent
+        OrderPlacedEvent event = OrderPlacedEvent.builder()
+                .orderId(savedOrder.getId())
+                .customerId(savedOrder.getCustomerId())
+                .restaurantId(savedOrder.getRestaurantId())
+                .pickupAddress(restaurant.getAddress())
+                .deliveryAddress(savedOrder.getDeliveryAddress())
+                .restaurantName(restaurant.getName())
+                .customerFirstName(customer.getFirstName())
+                .customerLastName(customer.getLastName())
+                .build();
+        
+        eventPublisher.publishOrderPlacedEvent(event);
 
         return OrderResponse.fromEntity(savedOrder);
+    }
+
+    @Transactional
+    public void updateOrderFromDelivery(DeliveryStatusEvent event) {
+        Order order = orderRepository.findById(event.getOrderId())
+                .orElseThrow(() -> new ResourceNotFoundException("Order", "id", event.getOrderId()));
+        
+        // Link the delivery ID if not already linked
+        order.setDeliveryId(event.getDeliveryId());
+
+        // Map delivery status to order status
+        switch (event.getStatus()) {
+            case "ASSIGNED" -> order.setStatus(Order.OrderStatus.CONFIRMED);
+            case "PICKED_UP" -> order.setStatus(Order.OrderStatus.OUT_FOR_DELIVERY);
+            case "DELIVERED" -> order.setStatus(Order.OrderStatus.DELIVERED);
+            case "FAILED" -> order.setStatus(Order.OrderStatus.CANCELLED);
+        }
+
+        orderRepository.save(order);
     }
 
     @Transactional(readOnly = true)

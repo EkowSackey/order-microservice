@@ -35,7 +35,7 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/h2-console/**", "/actuator/**").permitAll()
-                        .requestMatchers("/api/orders/**").hasRole("CUSTOMER")
+                        .requestMatchers("/api/orders/**").hasAnyRole("CUSTOMER", "RESTAURANT_OWNER")
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
