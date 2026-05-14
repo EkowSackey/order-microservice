@@ -52,13 +52,16 @@ public class Order {
     @Column(name = "customer_id", nullable = false)
     private Long customerId;
 
+    @Column(name = "customer_username", nullable = false, updatable = false)
+    private String customerUsername;
+
     @Column(name = "restaurant_id", nullable = false)
     private Long restaurantId;
 
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> items = new ArrayList<>();
 
-    @Column(name = "delivery_id", nullable = false)
+    @Column(name = "delivery_id")
     private Long deliveryId;
 
     @PrePersist

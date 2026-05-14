@@ -20,13 +20,8 @@ public class DeliveryEventConsumer {
 
     @RabbitListener(queues = RabbitMQConfig.ORDER_QUEUE)
     public void consumeDeliveryStatusEvent(DeliveryStatusEvent event) {
-        log.info("Received DeliveryStatusEvent for order id: {} with status: {}", 
-                 event.getOrderId(), event.getStatus());
-        
-        try {
-            orderService.updateOrderFromDelivery(event);
-        } catch (Exception e) {
-            log.error("Error updating order from delivery event: {}", e.getMessage());
-        }
+        log.info("Received DeliveryStatusEvent for order id: {} with status: {}",
+                event.getOrderId(), event.getStatus());
+        orderService.updateOrderFromDelivery(event);
     }
 }

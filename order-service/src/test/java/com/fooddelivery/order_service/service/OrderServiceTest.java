@@ -11,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -33,6 +34,9 @@ public class OrderServiceTest {
 
     @Mock
     private RestaurantClient restaurantClient;
+
+    @Mock
+    private ApplicationEventPublisher applicationEventPublisher;
 
     @InjectMocks
     private OrderService orderService;
@@ -190,13 +194,14 @@ public class OrderServiceTest {
         order.setId(1L);
         order.setStatus(Order.OrderStatus.PLACED);
         order.setCustomerId(100L);
+        order.setCustomerUsername("johndoe");
         order.setRestaurantId(200L);
         order.setItems(new ArrayList<>());
-        
+
         when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
 
         // Act
-        OrderResponse response = orderService.getOrderById(1L);
+        OrderResponse response = orderService.getOrderById(1L, "johndoe");
 
         // Assert
         assertNotNull(response);
@@ -211,7 +216,7 @@ public class OrderServiceTest {
 
         // Act & Assert
         assertThrows(ResourceNotFoundException.class, () -> {
-            orderService.getOrderById(99L);
+            orderService.getOrderById(99L, "johndoe");
         });
     }
 
@@ -221,13 +226,18 @@ public class OrderServiceTest {
         Order order = new Order();
         order.setId(1L);
         order.setStatus(Order.OrderStatus.PLACED);
+        order.setRestaurantId(200L);
         order.setItems(new ArrayList<>());
-        
+
+        mockRestaurant.setOwnerId(100L); // matches mockCustomer.getId()
+
         when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
+        when(customerClient.getCustomerByUsername("johndoe")).thenReturn(mockCustomer);
+        when(restaurantClient.getRestaurantById(200L)).thenReturn(mockRestaurant);
         when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // Act
-        OrderResponse response = orderService.updateOrderStatus(1L, "PREPARING");
+        OrderResponse response = orderService.updateOrderStatus(1L, "johndoe", "PREPARING");
 
         // Assert
         assertEquals("PREPARING", response.getStatus());
@@ -240,13 +250,11 @@ public class OrderServiceTest {
         Order order = new Order();
         order.setId(1L);
         order.setCustomerId(100L);
+        order.setCustomerUsername("johndoe");
         order.setStatus(Order.OrderStatus.PLACED);
         order.setItems(new ArrayList<>());
-        
+
         when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
-        
-        // Mock customer client
-        when(customerClient.getCustomerById(100L)).thenReturn(mockCustomer);
         when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         // Act
@@ -263,10 +271,10 @@ public class OrderServiceTest {
         Order order = new Order();
         order.setId(1L);
         order.setCustomerId(100L);
+        order.setCustomerUsername("johndoe");
         order.setStatus(Order.OrderStatus.PLACED);
-        
+
         when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
-        when(customerClient.getCustomerById(100L)).thenReturn(mockCustomer); // Mock customer username is 'johndoe'
 
         // Act & Assert
         Exception exception = assertThrows(UnauthorizedException.class, () -> {
@@ -283,12 +291,11 @@ public class OrderServiceTest {
         Order order = new Order();
         order.setId(1L);
         order.setCustomerId(100L);
+        order.setCustomerUsername("johndoe");
         order.setStatus(Order.OrderStatus.OUT_FOR_DELIVERY);
         order.setItems(new ArrayList<>());
-        
+
         when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
-        
-        when(customerClient.getCustomerById(100L)).thenReturn(mockCustomer);
 
         // Act & Assert
         Exception exception = assertThrows(IllegalStateException.class, () -> {

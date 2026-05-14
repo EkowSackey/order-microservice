@@ -1,11 +1,12 @@
 package com.fooddelivery.order_service.client;
 
+import com.fooddelivery.order_service.client.fallback.CustomerClientFallbackFactory;
 import com.fooddelivery.order_service.config.FeignConfig;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 
-@FeignClient(name = "customer-service", configuration = FeignConfig.class)
+@FeignClient(name = "customer-service", configuration = FeignConfig.class, fallbackFactory = CustomerClientFallbackFactory.class)
 public interface CustomerClient {
 
     @GetMapping("/api/customers/username/{username}")

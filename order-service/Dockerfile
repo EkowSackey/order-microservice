@@ -15,5 +15,5 @@ RUN ./mvnw clean package -DskipTests
 # Stage 2: Create the minimal runtime image
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-COPY --from=builder /app/target/*.jar app.jar
+COPY --from=builder /app/build-target/*.jar app.jar
 ENTRYPOINT ["java", "-Dspring.profiles.active=docker", "-jar", "app.jar"]

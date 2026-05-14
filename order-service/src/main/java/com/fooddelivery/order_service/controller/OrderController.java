@@ -5,6 +5,7 @@ import com.fooddelivery.order_service.service.OrderService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
@@ -27,8 +28,8 @@ public class OrderController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<OrderResponse> getById(@PathVariable Long id) {
-        return ResponseEntity.ok(orderService.getOrderById(id));
+    public ResponseEntity<OrderResponse> getById(@PathVariable Long id, Authentication auth) {
+        return ResponseEntity.ok(orderService.getOrderById(id, auth.getName()));
     }
 
     @GetMapping("/my-orders")
@@ -37,15 +38,17 @@ public class OrderController {
     }
 
     @GetMapping("/restaurant/{restaurantId}")
+    @PreAuthorize("hasRole('RESTAURANT_OWNER')")
     public ResponseEntity<List<OrderResponse>> getRestaurantOrders(
-            @PathVariable Long restaurantId) {
-        return ResponseEntity.ok(orderService.getRestaurantOrders(restaurantId));
+            Authentication auth, @PathVariable Long restaurantId) {
+        return ResponseEntity.ok(orderService.getRestaurantOrders(auth.getName(), restaurantId));
     }
 
     @PatchMapping("/{id}/status")
+    @PreAuthorize("hasRole('RESTAURANT_OWNER')")
     public ResponseEntity<OrderResponse> updateStatus(
-            @PathVariable Long id, @RequestParam String status) {
-        return ResponseEntity.ok(orderService.updateOrderStatus(id, status));
+            Authentication auth, @PathVariable Long id, @RequestParam String status) {
+        return ResponseEntity.ok(orderService.updateOrderStatus(id, auth.getName(), status));
     }
 
     @PostMapping("/{id}/cancel")

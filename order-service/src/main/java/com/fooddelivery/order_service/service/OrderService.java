@@ -5,6 +5,9 @@ import com.fooddelivery.order_service.dto.*;
 import com.fooddelivery.order_service.exception.*;
 import com.fooddelivery.order_service.model.*;
 import com.fooddelivery.order_service.repository.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
@@ -15,19 +18,21 @@ import java.util.List;
 @Service
 public class OrderService {
 
+    private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
     private final OrderRepository orderRepository;
     private final CustomerClient customerClient;
     private final RestaurantClient restaurantClient;
-    private final com.fooddelivery.order_service.publisher.OrderEventPublisher eventPublisher;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     public OrderService(OrderRepository orderRepository,
                         CustomerClient customerClient,
                         RestaurantClient restaurantClient,
-                        com.fooddelivery.order_service.publisher.OrderEventPublisher eventPublisher) {
+                        ApplicationEventPublisher applicationEventPublisher) {
         this.orderRepository = orderRepository;
         this.customerClient = customerClient;
         this.restaurantClient = restaurantClient;
-        this.eventPublisher = eventPublisher;
+        this.applicationEventPublisher = applicationEventPublisher;
     }
 
     @Transactional
@@ -46,6 +51,7 @@ public class OrderService {
         // Build order
         Order order = Order.builder()
                 .customerId(customer.getId())
+                .customerUsername(customerUsername)
                 .restaurantId(request.getRestaurantId())
                 .deliveryAddress(request.getDeliveryAddress() != null
                         ? request.getDeliveryAddress()
@@ -53,9 +59,7 @@ public class OrderService {
                 .specialInstructions(request.getSpecialInstructions())
                 .estimatedDeliveryTime(
                         LocalDateTime.now().plusMinutes(restaurant.getEstimatedDeliveryMinutes()))
-                // Setting initial default values that can be handled later via async
-                .deliveryId(0L) // Set default, actual id will be set by delivery event later
-                .items(new ArrayList<>()) // MUST INITIALIZE LIST TO AVOID NULL POINTERS
+                .items(new ArrayList<>())
                 .build();
 
         // Fetch MenuItem details from Restaurant Service via Feign
@@ -104,7 +108,10 @@ public class OrderService {
                 .customerLastName(customer.getLastName())
                 .build();
         
-        eventPublisher.publishOrderPlacedEvent(event);
+        // Publishes to Spring's event bus; OrderEventPublisher.onOrderPlaced fires
+        // via @TransactionalEventListener(AFTER_COMMIT) — RabbitMQ send only happens
+        // after the DB transaction has fully committed.
+        applicationEventPublisher.publishEvent(event);
 
         return OrderResponse.fromEntity(savedOrder);
     }
@@ -119,20 +126,34 @@ public class OrderService {
 
         // Map delivery status to order status
         switch (event.getStatus()) {
-            case "ASSIGNED" -> order.setStatus(Order.OrderStatus.CONFIRMED);
-            case "PICKED_UP" -> order.setStatus(Order.OrderStatus.OUT_FOR_DELIVERY);
-            case "DELIVERED" -> order.setStatus(Order.OrderStatus.DELIVERED);
-            case "FAILED" -> order.setStatus(Order.OrderStatus.CANCELLED);
+            case "ASSIGNED"   -> order.setStatus(Order.OrderStatus.CONFIRMED);
+            case "PICKED_UP"  -> order.setStatus(Order.OrderStatus.OUT_FOR_DELIVERY);
+            case "IN_TRANSIT" -> order.setStatus(Order.OrderStatus.OUT_FOR_DELIVERY);
+            case "DELIVERED"  -> order.setStatus(Order.OrderStatus.DELIVERED);
+            case "FAILED"     -> order.setStatus(Order.OrderStatus.CANCELLED);
+            default -> log.warn("Unhandled delivery status '{}' for order #{} — no order status update applied",
+                    event.getStatus(), event.getOrderId());
         }
 
         orderRepository.save(order);
     }
 
     @Transactional(readOnly = true)
-    public OrderResponse getOrderById(Long orderId) {
+    public OrderResponse getOrderById(Long orderId, String username) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId));
-        return OrderResponse.fromEntity(order);
+
+        if (order.getCustomerUsername().equals(username)) {
+            return OrderResponse.fromEntity(order);
+        }
+
+        CustomerDTO requestor = customerClient.getCustomerByUsername(username);
+        RestaurantDTO restaurant = restaurantClient.getRestaurantById(order.getRestaurantId());
+        if (restaurant.getOwnerId().equals(requestor.getId())) {
+            return OrderResponse.fromEntity(order);
+        }
+
+        throw new UnauthorizedException("You do not have access to this order");
     }
 
     @Transactional(readOnly = true)
@@ -144,19 +165,43 @@ public class OrderService {
     }
 
     @Transactional(readOnly = true)
-    public List<OrderResponse> getRestaurantOrders(Long restaurantId) {
+    public List<OrderResponse> getRestaurantOrders(String ownerUsername, Long restaurantId) {
+        CustomerDTO owner = customerClient.getCustomerByUsername(ownerUsername);
+        RestaurantDTO restaurant = restaurantClient.getRestaurantById(restaurantId);
+        if (!restaurant.getOwnerId().equals(owner.getId())) {
+            throw new UnauthorizedException("You do not own this restaurant");
+        }
         return orderRepository.findByRestaurantIdOrderByCreatedAtDesc(restaurantId)
                 .stream().map(OrderResponse::fromEntity).toList();
     }
 
     @Transactional
-    public OrderResponse updateOrderStatus(Long orderId, String status) {
+    public OrderResponse updateOrderStatus(Long orderId, String ownerUsername, String status) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId));
 
-        Order.OrderStatus newStatus = Order.OrderStatus.valueOf(status.toUpperCase());
-        order.setStatus(newStatus);
+        // Only PREPARING and READY_FOR_PICKUP are restaurant-controllable.
+        // Delivery-driven transitions (CONFIRMED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED)
+        // are handled exclusively via updateOrderFromDelivery (RabbitMQ events).
+        Order.OrderStatus newStatus;
+        try {
+            newStatus = Order.OrderStatus.valueOf(status.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid order status: " + status);
+        }
+        if (newStatus != Order.OrderStatus.PREPARING && newStatus != Order.OrderStatus.READY_FOR_PICKUP) {
+            throw new IllegalStateException(
+                    "Restaurant owners can only set status to PREPARING or READY_FOR_PICKUP");
+        }
 
+        // Verify the authenticated user owns the restaurant for this order
+        CustomerDTO owner = customerClient.getCustomerByUsername(ownerUsername);
+        RestaurantDTO restaurant = restaurantClient.getRestaurantById(order.getRestaurantId());
+        if (!restaurant.getOwnerId().equals(owner.getId())) {
+            throw new UnauthorizedException("You do not own the restaurant for this order");
+        }
+
+        order.setStatus(newStatus);
         return OrderResponse.fromEntity(orderRepository.save(order));
     }
 
@@ -165,9 +210,7 @@ public class OrderService {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId));
 
-        // Ensure this user owns the order
-        CustomerDTO customer = customerClient.getCustomerById(order.getCustomerId());
-        if (!customer.getUsername().equals(username)) {
+        if (!order.getCustomerUsername().equals(username)) {
             throw new UnauthorizedException("You can only cancel your own orders");
         }
 
@@ -177,13 +220,9 @@ public class OrderService {
         }
 
         order.setStatus(Order.OrderStatus.CANCELLED);
+        OrderResponse response = OrderResponse.fromEntity(orderRepository.save(order));
 
-        // ASYNC DELIVERY CANCEL:
-        // Will publish OrderCancelledEvent here later instead of synchronous call
-        // if (order.getDeliveryId() != null) {
-        //    eventPublisher.publishEvent(new OrderCancelledEvent(order.getId()));
-        // }
-
-        return OrderResponse.fromEntity(orderRepository.save(order));
+        applicationEventPublisher.publishEvent(new OrderCancelledEvent(orderId));
+        return response;
     }
 }
